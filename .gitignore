@@ -1,0 +1,18 @@
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 项目特定目录 (无点前缀)
+md/
+venv/
+
+# Charles MCP 运行数据与备份
+# 这里的 back/ 和 package/ 是脚本自动生成的
+back/
+package/
+*.chlsj
+
+# 环境变量与私密配置
+.env
+.venv/
