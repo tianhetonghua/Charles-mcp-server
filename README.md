@@ -1,53 +1,49 @@
-# Charles MCP Server
+# Charles MCP Server (V2.0 - 高性能任务驱动版)
 
+**基于 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 的高级流量分析服务器，专为逆向工程和安全研究设计。**
 
+## 🚀 核心架构演进 (V2.0)
 
-**这是一个基于 \[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 的服务器，允许 AI 直接操作 Charles Proxy 进行抓包、过滤流量和设置弱网环境。**
+针对高频分析场景进行了深度重构，解决了过度收割和 IO 瓶颈：
 
+- ⚡ **内存首选架构**：引入 `ACTIVE_CACHE` 机制。所有分析工具（过滤、探测、熵值计算）优先从内存读取数据，响应延迟从百毫秒降至微秒级。
+- 🎯 **收割与分析解耦**：不再自动触发收割。由 AI 或用户通过 `harvest_data` 主动更新流量，确保数据状态的可控性。
+- 🔒 **探测-过滤互锁 (Interlock)**：内置安全机制。在大数据量场景下，强制要求先进行关键词探测（Check）获得授权后，才能拉取精简简报（Filter），有效保护上下文窗口。
+- 📂 **任务驱动隔离**：支持 `task_id` 标识。切换任务时自动管理物理缓存，支持历史任务数据的冷启动加载。
 
+## 🛠️ 主要功能工具
 
-## 功能特点
+### 1. 数据收割与流控
+- `harvest_data`: **[主动动作]** 从 Charles 实时同步流量并刷新内存缓存。
+- `get_raw_data`: 提取 100% 原始报文，用于协议分析和解密。
 
-- 🚀 **自动化抓包：通过 `proxy_by_time` 录制特定时长的流量。**
+### 2. 多维度极速过滤
+- `check_keyword_exists`: **[探测]** 跨 Headers 和 Body 搜索关键词，返回 ID 索引并授权后续操作。
+- `filter_by_path`: 按 URL 路径（如 `/api/v1/sign`）快速锁定业务接口。
+- `filter_by_status`: 按 HTTP 状态码（如 `403`, `500`）排查异常请求。
+- `filter_by_keyword`: **[提货]** 在获得探测授权后，获取匹配项的精简预览。
 
-- 🔍 **智能搜索：支持正则表达式在流量包中定位关键字及其行号。**
+### 3. 安全与深度分析
+- `detect_encryption`: **熵值判定**。通过香农熵算法分析 Body，自动识别疑似加密、混淆或强压缩的载荷（熵值 > 3.9）。
+- `lifespan`: 退出自动还原 Charles 配置，物理清理敏感流量数据。
 
-- 🌐 **弱网模拟：一键切换 3G/4G/Fibre 等网络预设。**
-
-- 🛡️ **安全隔离：退出时自动物理清空流量数据并还原 Charles 配置。**
-
-
-
-## 快速开始
-
-
+## 📥 快速开始
 
 ### 前提条件
+1. **Python 3.10+**
+2. **Charles Proxy**: 开启 Web Interface (`Proxy -> Web Interface Settings`)。
+   - 用户名: `tower`
+   - 密码: `123456`
 
-**1. 安装 Python 3.10+**
-
-**2. 安装并运行 \[Charles Proxy](https://www.charlesproxy.com/)**
-
-**3. 在 Charles 中开启 Web Interface: `Proxy -> Web Interface Settings` (用户名: `tower`, 密码: `123456`)**
-
-
-
-### 安装
-
-```bash
-pip install -r requirements.txt
-```
-
-mcp.json：
-
+### 安装与配置
+1. 安装依赖：`pip install -r requirements.txt`
+2. 在 `mcp.json` 中添加：
 ```json
 {
   "mcpServers": {
     "charles": {
       "command": "python",
-      "args": ["/绝对路径/到/charles_mcp_server.py"]
+      "args": ["/绝对路径/到/charles-mcp-server.py"]
     }
   }
 }
-```
-
