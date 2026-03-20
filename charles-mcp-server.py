@@ -26,6 +26,7 @@ async def get_data_for_analysis(task_id: str) -> List[Dict]:
     ACTIVE_CACHE["last_update"] = time.time()
     return disk_data
 
+#======    【数据过滤接口】   ======
 @mcp.tool()
 async def harvest_data(task_id: str, ctx: Context) -> Dict:
     """【同步】更新流量并强制同步内存"""
@@ -99,6 +100,25 @@ async def get_raw_data(entry_id: str, task_id: str) -> Dict:
     entry = next((e for e in data if str(e.get("id")) == str(entry_id)), None)
     return CMS_tools.wrap_response(entry or {"error": "NOT_FOUND"}, task_id)
 
+#======    【弱网模拟接口】   ======
+@mcp.tool()
+async def get_throttle_presets() -> Dict:
+    """获取 Charles 支持的所有弱网预设名称列表。"""
+    return {"presets": CMS_tools.THROTTLE_PRESETS}
+@mcp.tool()
+async def set_throttling(preset: Optional[str], task_id: str, ctx: Context) -> Dict:
+    """
+    【环境控制】切换网络带宽限制。
+    - preset: 传入预设名称（如 '4G'）开启弱网；传入 null 或不传则彻底关闭弱网模拟。
+    """
+    success = await CMS_tools.set_charles_throttling(preset, ctx)
+    return CMS_tools.wrap_response({
+        "action": "Activate" if preset else "Deactivate",
+        "preset": preset or "None",
+        "success": success
+    }, task_id)
+
+#入口
 if __name__ == "__main__":
     if sys.platform == "win32":
         import io
