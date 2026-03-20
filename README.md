@@ -1,4 +1,4 @@
-# Charles MCP Server (V2.0 - 高性能任务驱动版)
+# Charles MCP Server 
 
 **基于 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 的高级流量分析服务器，专为逆向工程和安全研究设计。**
 
