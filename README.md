@@ -52,29 +52,44 @@
    - 密码: `123456`
 
 ### 安装与配置
-1. 在 `mcp.json` 中添加：
 
-```json
-{
-  "mcpServers": {
-    "charles": {
-      "command": "charles-mcp-server",
-      "args": 
-    }
-  }
-}
 
-```
 
-2、如果你使用的pyenv环境：
+1. 直接安装：
 
-```json
-    "mcpServers": {
-      "command": "实际python解释器路径/python.exe",
-      "args": [
-        "-m",
-        "charles_mcp_server.main"
-      ]
-    }
-```
+   ```shell
+   pip install charles-mcp-server
+   ```
 
+2. 安装后配置，在 `mcp.json` 中添加：
+
+   ```json
+   {
+     "mcpServers": {
+       "charles": {
+         "command": "charles-mcp-server",
+         "args": []
+       }
+     }
+   }
+   ```
+
+   
+
+3. 如果你使用的pyenv环境：
+
+   ```json
+   {
+     "mcpServers": {
+       "charles": {
+         "command": "pyenv对应环境的python路径/python.exe",
+         "args": [
+           "-m",
+           "charles_mcp_server.main"
+         ]
+       }
+     }
+   }
+   ```
+
+   
