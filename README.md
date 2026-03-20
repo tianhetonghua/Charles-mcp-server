@@ -93,3 +93,9 @@
    ```
 
    
+
+## License & Owner
+
+This project is licensed under the **MIT License**.
+
+Owner: **tianhetonghua**
