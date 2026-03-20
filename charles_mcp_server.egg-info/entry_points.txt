@@ -1,0 +1,2 @@
+[console_scripts]
+charles-mcp-server = charles_mcp_server.main:main

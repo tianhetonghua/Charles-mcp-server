@@ -11,44 +11,37 @@ from requests.auth import HTTPBasicAuth
 from mcp.server.fastmcp import Context
 
 # --- 环境初始化 ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-os.chdir(BASE_DIR)
+# 改造点：使用当前工作目录，确保在 pip 安装模式下有权创建缓存
+BASE_DIR = os.getcwd() 
+CACHE_ROOT = os.path.join(BASE_DIR, "charles_cache")
 
-AUTH = HTTPBasicAuth('tower', '123456')
+AUTH = HTTPBasicAuth('Charles-mcp-server', '123456')
 PROXIES = {"http": "http://127.0.0.1:8888"}
 CHARLES_BASE_URL = "http://control.charles"
-PACKAGE_DIR = os.path.join(BASE_DIR, "package")
-BACKUP_DIR = os.path.join(BASE_DIR, "back")
-STATE_FILE = os.path.join(BASE_DIR, "task_state.json")
+
+# 统一指向子目录
+PACKAGE_DIR = os.path.join(CACHE_ROOT, "package")
+BACKUP_DIR = os.path.join(CACHE_ROOT, "back")
+STATE_FILE = os.path.join(CACHE_ROOT, "task_state.json")
 
 #======    【弱网模拟工具】   ======
-# --- 4. 弱网模拟预设 (对接 Charles 物理接口) ---
 THROTTLE_PRESETS = [
     "56 kbps Modem", "256 kbps ISDN/DSL", "512 kbps ISDN/DSL",
     "2 Mbps ADSL", "8 Mbps ADSL2", "16 Mbps ADSL2+",
     "32 Mbps VDSL", "32 Mbps Fibre", "100 Mbps Fibre",
     "3G", "4G"
 ]
+
 async def set_charles_throttling(preset_name: Optional[str], ctx: Context) -> bool:
-    """
-    调用 Charles 物理接口切换弱网环境。
-    - 若 preset_name 为 None，则执行全局关闭 (deactivate)。
-    - 若指定 preset_name，则执行激活 (activate)。
-    """
     params = {"auth": AUTH, "proxies": PROXIES, "timeout": 5}
     try:
         if not preset_name:
-            # 执行全局关闭
             requests.get(f"{CHARLES_BASE_URL}/throttling/deactivate", **params)
             await ctx.info("🌐 弱网模拟已全局关闭")
             return True
-        
         if preset_name not in THROTTLE_PRESETS:
             await ctx.error(f"无效的预设名: {preset_name}")
             return False
-        
-        # 执行激活特定预设
-        # 格式：http://control.charles/throttling/activate?preset=4G
         url = f"{CHARLES_BASE_URL}/throttling/activate"
         requests.get(url, params={"preset": preset_name}, **params)
         await ctx.info(f"🌐 弱网模拟已激活: {preset_name}")
@@ -57,11 +50,8 @@ async def set_charles_throttling(preset_name: Optional[str], ctx: Context) -> bo
         await ctx.error(f"Throttling 操作失败: {e}")
         return False
 
-
 #======    【数据过滤工具】   ======
-
 def wrap_response(data: Any, task_id: str) -> Dict[str, Any]:
-    """包装器：返回数据并附带任务状态"""
     last_h = "N/A"
     if os.path.exists(STATE_FILE):
         try:
@@ -161,9 +151,6 @@ async def get_proxy_data_instant(ctx: Context) -> List[Dict]:
                 json.dump(raw, f, ensure_ascii=False)
         return raw
     except: return []
-
-
-#====  【备份设置函数】  ====
 
 def copy_config():
     path = os.getenv('AppData') or os.path.join(os.getenv('USERPROFILE', ''), 'AppData', 'Roaming')

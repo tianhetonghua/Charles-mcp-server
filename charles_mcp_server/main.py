@@ -5,7 +5,10 @@ import os
 from typing import List, Dict, Optional, Any
 from contextlib import asynccontextmanager
 from mcp.server.fastmcp import FastMCP, Context
-import CMS_tools
+try:
+    from . import CMS_tools  
+except ImportError:
+    import CMS_tools         
 
 mcp = FastMCP("CharlesMCP", json_response=True)
 ACTIVE_CACHE = {"task_id": None, "data": [], "last_update": 0}
@@ -119,8 +122,12 @@ async def set_throttling(preset: Optional[str], task_id: str, ctx: Context) -> D
     }, task_id)
 
 #入口
-if __name__ == "__main__":
+def main():
+    """正版入口，处理 Windows 编码并启动 stdio"""
     if sys.platform == "win32":
         import io
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
     mcp.run(transport="stdio")
+
+if __name__ == "__main__":
+    main()
