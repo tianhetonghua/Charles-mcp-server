@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# 构建产物
+dist/
+build/
+*.egg-info/
+
+# macOS
+.DS_Store
+
 # 项目特定目录 (无点前缀)
 md/
 venv/
