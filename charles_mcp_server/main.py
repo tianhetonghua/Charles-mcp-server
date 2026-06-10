@@ -1,3 +1,4 @@
+import os
 import sys
 import time
 import json
@@ -15,13 +16,15 @@ mcp = FastMCP("CharlesMCP", json_response=True)
 
 # ---------- 运行时状态 ----------
 
-# ARCHIVE        所有历史 entry，id → entry dict，只增不删
-# CHECKPOINTS    时间线表，每次 harvest_data 追加一条
-# MAX_SEEN_MILLIS 已处理过的最大 times.start 毫秒时间戳，用于增量判断
-# CACHE          当前 agent 的可见窗口，指向某个 checkpoint 的数据切片
-ARCHIVE:          Dict[int, Dict] = {}
-CHECKPOINTS:      List[Dict]      = []
-MAX_SEEN_MILLIS:  int              = 0   # 已处理过的最大 times.start 毫秒时间戳
+# ARCHIVE          live 条目，int(id) → entry
+# ARCHIVE_REC      录包条目，"rec:filename:id" → entry（避免与 live id 冲突）
+# CHECKPOINTS      时间线表，harvest_data / load_recording 均追加一条
+# MAX_SEEN_MILLIS  已处理过的最大 times.start 毫秒时间戳，用于 live 增量判断
+# CACHE            当前 agent 的可见窗口，指向某个 checkpoint 的数据切片
+ARCHIVE:         Dict[int, Dict] = {}
+ARCHIVE_REC:     Dict[str, Dict] = {}
+CHECKPOINTS:     List[Dict]      = []
+MAX_SEEN_MILLIS: int              = 0
 CACHE: Dict = {
     "data":          [],    # 当前可见条目
     "checkpoint_id": None,  # 正在查看的 checkpoint（None = 未收割）
@@ -55,6 +58,19 @@ def _parse_millis(iso_str: str) -> int:
 def _entry_start_time(entry: Dict) -> str:
     """取 entry 的请求开始时间字符串，用于 checkpoint 记录。"""
     return (entry.get("times") or {}).get("start") or ""
+
+def _get_archived(key) -> Optional[Dict]:
+    """统一查 ARCHIVE（live）和 ARCHIVE_REC（录包），找不到返回 None。"""
+    if isinstance(key, int):
+        return ARCHIVE.get(key)
+    if isinstance(key, str):
+        if key.startswith("rec:"):
+            return ARCHIVE_REC.get(key)
+        try:
+            return ARCHIVE.get(int(key))
+        except (ValueError, TypeError):
+            return ARCHIVE_REC.get(key)
+    return None
 
 def _data_hint() -> Optional[str]:
     """无数据或最新 checkpoint 明显陈旧时返回提示，回溯历史时不打扰。"""
@@ -121,6 +137,7 @@ async def harvest_data(fresh_start: bool = False) -> Dict:
     # 创建 checkpoint 记录
     cp: Dict = {
         "id":         len(CHECKPOINTS) + 1,
+        "source":     "live",
         "read_at":    now_str,
         "count":      len(new_entries),
         "entry_ids":  [e["id"] for e in new_entries],
@@ -200,7 +217,7 @@ async def load_checkpoint(checkpoint_id: int) -> Dict:
     if cp.get("is_reset"):
         entries = []
     else:
-        entries = [ARCHIVE[eid] for eid in cp["entry_ids"] if eid in ARCHIVE]
+        entries = [e for eid in cp["entry_ids"] if (e := _get_archived(eid)) is not None]
 
     KEYWORD_AUTH.clear()
     CACHE["data"]          = entries
@@ -214,6 +231,60 @@ async def load_checkpoint(checkpoint_id: int) -> Dict:
         "end_time":      cp.get("end_time"),
         "is_reset":      cp.get("is_reset", False),
         "hint":          "已切换到该时间窗口，所有过滤工具在此范围内生效。调用 harvest_data() 可切回最新数据。",
+    }
+
+@mcp.tool()
+async def load_recording(file_path: str) -> Dict:
+    """加载本地 .chlsj 历史录包到 ARCHIVE，创建 checkpoint 并切换到该窗口。
+
+    录包与 live 流量共用所有过滤工具（filter_by_*、filter_by_encryption 等）。
+    录包条目用 "rec:文件名:id" 命名空间存储，不会与 live 条目的 id 冲突。
+    加载后调用 list_checkpoints 可在时间线上看到录包的真实抓包时间范围。
+
+    file_path：.chlsj 文件的绝对路径或相对路径。
+    """
+    if not os.path.exists(file_path):
+        return {"error": "FILE_NOT_FOUND", "file_path": file_path}
+
+    fname = os.path.basename(file_path)
+    try:
+        entries = CMS_tools.read_chlsj(file_path)
+    except Exception as exc:
+        return {"error": "READ_FAILED", "message": str(exc)}
+
+    # 注入 _mcp_id：让 simplify_entry / get_raw_data 能用命名空间 key 定位条目
+    # chlsj 文件的 entry 没有 id 字段，_mcp_id 是唯一可用的标识符
+    rec_ids: List = []
+    for i, e in enumerate(entries):
+        raw_id = e.get("id") if e.get("id") is not None else i
+        key = f"rec:{fname}:{raw_id}"
+        e["_mcp_id"] = key          # 注入到 entry 本身，simplify_entry 会读取它
+        ARCHIVE_REC[key] = e
+        rec_ids.append(key)
+
+    cp: Dict = {
+        "id":         len(CHECKPOINTS) + 1,
+        "source":     f"recording:{fname}",
+        "read_at":    datetime.now().strftime("%H:%M:%S"),
+        "count":      len(entries),
+        "entry_ids":  rec_ids,
+        "is_reset":   False,
+        "start_time": _entry_start_time(entries[0])  if entries else None,
+        "end_time":   _entry_start_time(entries[-1]) if entries else None,
+    }
+    CHECKPOINTS.append(cp)
+
+    KEYWORD_AUTH.clear()
+    CACHE["data"]          = entries
+    CACHE["checkpoint_id"] = cp["id"]
+
+    return {
+        "checkpoint_id":  cp["id"],
+        "file":           fname,
+        "loaded":         len(entries),
+        "start_time":     cp["start_time"],
+        "end_time":       cp["end_time"],
+        "total_archived": len(ARCHIVE) + len(ARCHIVE_REC),
     }
 
 # ====================================================================
@@ -461,17 +532,15 @@ async def get_raw_data(entry_id: str) -> Dict:
     优先在当前 checkpoint 查找，找不到时从 ARCHIVE 全局搜索。
     这样即使切换了 checkpoint，仍可用 entry_id 直接取历史数据。
     """
-    # 先在当前窗口找
+    # 先在当前窗口找（认 _mcp_id 或 id，兼容 live 和录包条目）
     entry = next(
-        (e for e in CACHE["data"] if str(e.get("id")) == str(entry_id)),
+        (e for e in CACHE["data"]
+         if str(e.get("_mcp_id") or e.get("id")) == str(entry_id)),
         None,
     )
-    # 再从全局 ARCHIVE 找
+    # 再从全局 ARCHIVE / ARCHIVE_REC 找
     if entry is None:
-        try:
-            entry = ARCHIVE.get(int(entry_id))
-        except (ValueError, TypeError):
-            entry = None
+        entry = _get_archived(entry_id)
 
     if entry is None:
         return {"error": "NOT_FOUND", "entry_id": entry_id}

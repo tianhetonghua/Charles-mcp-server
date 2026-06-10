@@ -34,6 +34,18 @@ def _get(path: str, *, timeout: int = 10, **kwargs) -> requests.Response:
         **kwargs,
     )
 
+def read_chlsj(file_path: str) -> List[Dict]:
+    """读取本地 .chlsj 历史录包，返回 entry 列表。
+
+    .chlsj 与 /session/export-json 格式相同，所有过滤/分析工具可直接使用。
+    文件不存在或格式错误时抛出异常（由调用方处理并返回错误信息）。
+    """
+    with open(file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError(f"不是有效的 .chlsj 文件（期望 list，实际 {type(data).__name__}）")
+    return data
+
 def export_session() -> List[Dict]:
     """只读导出当前 Charles session 的全部条目。
 
@@ -180,7 +192,7 @@ def simplify_entry(entry: Dict, preview_chars: int = 300) -> Dict:
     res_body = res.get("body") or {}
 
     return {
-        "id":          entry.get("id"),
+        "id":          entry.get("_mcp_id") or entry.get("id"),
         "method":      entry.get("method"),
         "host":        entry.get("host"),
         "path":        entry.get("path"),
