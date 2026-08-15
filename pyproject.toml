@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "charles-mcp-server" 
-version = "3.0.0"
+version = "3.0.1"
 description = "Charles Proxy MCP 服务器，checkpoint 时间线 + 增量收割，专为 AI agent 逆向分析设计"
 readme = "README.md"
 requires-python = ">=3.10"
