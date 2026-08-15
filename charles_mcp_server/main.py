@@ -19,12 +19,15 @@ mcp = FastMCP("CharlesMCP", json_response=True)
 # ARCHIVE          live 条目，int(id) → entry
 # ARCHIVE_REC      录包条目，"rec:filename:id" → entry（避免与 live id 冲突）
 # CHECKPOINTS      时间线表，harvest_data / load_recording 均追加一条
+# CAPTURES         命名业务抓包会话，对应一个或多个 checkpoint
 # MAX_SEEN_MILLIS  已处理过的最大 times.start 毫秒时间戳，用于 live 增量判断
 # CACHE            当前 agent 的可见窗口，指向某个 checkpoint 的数据切片
 ARCHIVE:         Dict[int, Dict] = {}
 ARCHIVE_REC:     Dict[str, Dict] = {}
 CHECKPOINTS:     List[Dict]      = []
+CAPTURES:        List[Dict]      = []
 MAX_SEEN_MILLIS: int              = 0
+MAX_ARCHIVE_ENTRIES = max(1, int(os.getenv("CHARLES_MCP_MAX_ARCHIVE_ENTRIES", "10000")))
 CACHE: Dict = {
     "data":          [],    # 当前可见条目
     "checkpoint_id": None,  # 正在查看的 checkpoint（None = 未收割）
@@ -59,6 +62,22 @@ def _entry_start_time(entry: Dict) -> str:
     """取 entry 的请求开始时间字符串，用于 checkpoint 记录。"""
     return (entry.get("times") or {}).get("start") or ""
 
+def _entry_millis(entry: Dict) -> int:
+    """读取 Charles 条目的开始时间；缺失或格式错误时返回 0。"""
+    return _parse_millis(_entry_start_time(entry))
+
+def _archive_live_entries(entries: List[Dict]) -> int:
+    """写入 live 归档，并在超出上限时从最旧条目开始释放内存。"""
+    for entry in entries:
+        entry_id = entry.get("id")
+        if entry_id is not None:
+            ARCHIVE[entry_id] = entry
+    evicted = 0
+    while len(ARCHIVE) > MAX_ARCHIVE_ENTRIES:
+        ARCHIVE.pop(next(iter(ARCHIVE)))
+        evicted += 1
+    return evicted
+
 def _get_archived(key) -> Optional[Dict]:
     """统一查 ARCHIVE（live）和 ARCHIVE_REC（录包），找不到返回 None。"""
     if isinstance(key, int):
@@ -88,7 +107,7 @@ def _data_hint() -> Optional[str]:
 # ====================================================================
 
 @mcp.tool()
-async def harvest_data(fresh_start: bool = False) -> Dict:
+async def harvest_data(fresh_start: bool = False, clear_charles: bool = False) -> Dict:
     """从 Charles 同步增量流量，并在时间线上创建一个新 checkpoint。
 
     【fresh_start=False】（默认）
@@ -100,15 +119,20 @@ async def harvest_data(fresh_start: bool = False) -> Dict:
       之后的 harvest_data() 只返回此刻之后的新流量。
       典型用法：切换分析目标前调用一次。
 
-    每次调用都会：
-      - 将新条目存入 ARCHIVE（可通过 load_checkpoint 随时回溯）
-      - 将 CACHE 切换到本次新增的条目
-      - 清空 Charles session 并重启录制（导出始终只含最新增量）
-      - 使所有关键词授权失效
+    默认不会修改 Charles session。clear_charles=True 时才会在归档成功后清空 session 并重启录制。
+    每次调用都会将新条目存入 ARCHIVE、切换 CACHE，并使关键词授权失效。
     """
     global MAX_SEEN_MILLIS
 
-    all_entries = CMS_tools.export_session()
+    export_result = CMS_tools.export_session()
+    if not export_result["ok"]:
+        return {
+            "error": export_result["error"],
+            "message": export_result["message"],
+            "hint": "请确认 Charles 已启动，并在 Proxy → Web Interface Settings 启用 Web Interface。",
+        }
+
+    all_entries = export_result["entries"]
     now_str     = datetime.now().strftime("%H:%M:%S")
 
     # 取当前 session 中最大的请求时间戳，用于推进水位线
@@ -127,12 +151,13 @@ async def harvest_data(fresh_start: bool = False) -> Dict:
             and e.get("id") not in ARCHIVE
         ]
         MAX_SEEN_MILLIS = cur_max_millis
-        for e in new_entries:
-            ARCHIVE[e["id"]] = e
+        evicted = _archive_live_entries(new_entries)
+    if fresh_start:
+        evicted = 0
 
-    # 数据已安全写入 ARCHIVE，现在清空 Charles session
-    # Charles 导出始终只包含本次之后的增量，保持小而快
-    cleared = CMS_tools.clear_and_restart()
+    charles_cleanup = None
+    if clear_charles:
+        charles_cleanup = CMS_tools.clear_and_restart()
 
     # 创建 checkpoint 记录
     cp: Dict = {
@@ -159,11 +184,98 @@ async def harvest_data(fresh_start: bool = False) -> Dict:
         "new_entries":      len(new_entries),
         "total_archived":   len(ARCHIVE),
         "total_in_session": len(all_entries),
-        "charles_cleared":  cleared, # session 已清空，下次导出从零开始
+        "archive_limit":     MAX_ARCHIVE_ENTRIES,
+        "evicted_entries":   evicted,
+        "charles_cleanup":   charles_cleanup,
     }
     if fresh_start:
         result["hint"] = "重置点已记录。在 App 触发目标操作后，再次调用 harvest_data() 即可看到新流量。"
+    elif not all_entries:
+        result["hint"] = "Charles session 当前为空。"
     return result
+
+# ====================================================================
+#  命名抓包会话
+# ====================================================================
+
+@mcp.tool()
+async def begin_capture(name: str, clear_charles: bool = False) -> Dict:
+    """开始一个命名业务抓包会话。
+
+    创建一个时间重置点；随后触发业务操作并调用 harvest_data()。默认不会清空 Charles。
+    name 应描述业务动作，例如“登录失败重试”。
+    """
+    normalized_name = name.strip()
+    if not normalized_name:
+        return {"error": "INVALID_NAME", "message": "抓包会话名称不能为空。"}
+    if any(capture.get("ended_at") is None for capture in CAPTURES):
+        return {"error": "CAPTURE_ACTIVE", "message": "已有未结束的抓包会话，请先调用 end_capture()。"}
+    reset = await harvest_data(fresh_start=True, clear_charles=clear_charles)
+    if "error" in reset:
+        return reset
+    capture = {
+        "id": len(CAPTURES) + 1,
+        "name": normalized_name,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "start_checkpoint_id": reset["checkpoint_id"],
+        "end_checkpoint_id": None,
+        "ended_at": None,
+    }
+    CAPTURES.append(capture)
+    return {"capture": capture, "hint": "请触发目标业务操作，然后调用 harvest_data()，完成后调用 end_capture()。"}
+
+@mcp.tool()
+async def end_capture() -> Dict:
+    """结束当前命名抓包会话，并返回其覆盖的 checkpoint 范围。"""
+    capture = next((item for item in reversed(CAPTURES) if item.get("ended_at") is None), None)
+    if capture is None:
+        return {"error": "NO_ACTIVE_CAPTURE", "message": "当前没有进行中的抓包会话。"}
+    capture["ended_at"] = datetime.now().isoformat(timespec="seconds")
+    capture["end_checkpoint_id"] = CHECKPOINTS[-1]["id"] if CHECKPOINTS else None
+    return {"capture": capture}
+
+@mcp.tool()
+async def list_captures() -> Dict:
+    """列出命名抓包会话及其 checkpoint 覆盖范围。"""
+    return {"total": len(CAPTURES), "captures": CAPTURES}
+
+@mcp.tool()
+async def load_capture(capture_id: int) -> Dict:
+    """加载命名抓包会话中的所有条目，供过滤与分析工具在整个业务窗口内工作。"""
+    capture = next((item for item in CAPTURES if item["id"] == capture_id), None)
+    if capture is None:
+        return {"error": "NOT_FOUND", "message": f"未找到 capture_id={capture_id}。"}
+    end_checkpoint_id = capture.get("end_checkpoint_id")
+    if end_checkpoint_id is None:
+        return {"error": "CAPTURE_ACTIVE", "message": "抓包会话尚未结束，请先调用 end_capture()。"}
+    checkpoint_ids = range(capture["start_checkpoint_id"] + 1, end_checkpoint_id + 1)
+    entries = []
+    for checkpoint_id in checkpoint_ids:
+        checkpoint = CHECKPOINTS[checkpoint_id - 1]
+        entries.extend(_get_archived(entry_id) for entry_id in checkpoint["entry_ids"])
+    CACHE["data"] = [entry for entry in entries if entry is not None]
+    CACHE["checkpoint_id"] = None
+    CACHE["harvested_at"] = time.time()
+    KEYWORD_AUTH.clear()
+    return {
+        "capture": capture,
+        "loaded": len(CACHE["data"]),
+        "hint": "已加载完整业务窗口，所有过滤工具现在在该会话范围内生效。",
+    }
+
+@mcp.tool()
+async def clear_archive() -> Dict:
+    """仅清理 MCP 内存中的归档、时间线与命名抓包会话；不会修改 Charles session。"""
+    global MAX_SEEN_MILLIS
+    counts = {"live_entries": len(ARCHIVE), "recording_entries": len(ARCHIVE_REC), "checkpoints": len(CHECKPOINTS)}
+    ARCHIVE.clear()
+    ARCHIVE_REC.clear()
+    CHECKPOINTS.clear()
+    CAPTURES.clear()
+    KEYWORD_AUTH.clear()
+    MAX_SEEN_MILLIS = 0
+    CACHE.update({"data": [], "checkpoint_id": None, "harvested_at": 0.0, "total_in_session": 0})
+    return {"cleared": counts, "charles_session_modified": False}
 
 # ====================================================================
 #  Checkpoint 时间线

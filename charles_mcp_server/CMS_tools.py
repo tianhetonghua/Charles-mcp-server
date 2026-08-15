@@ -46,19 +46,63 @@ def read_chlsj(file_path: str) -> List[Dict]:
         raise ValueError(f"不是有效的 .chlsj 文件（期望 list，实际 {type(data).__name__}）")
     return data
 
-def export_session() -> List[Dict]:
-    """只读导出当前 Charles session 的全部条目。
-
-    不清除 session，不重启录制，对 Charles 状态零副作用。
-    返回空列表表示 Charles 未运行或 session 为空。
-    """
+def export_session() -> Dict[str, Any]:
+    """只读导出当前 Charles session，并返回可供 MCP 呈现的结构化结果。"""
     try:
         resp = _get("/session/export-json", timeout=15)
+        if resp.status_code in (401, 403):
+            return {
+                "ok": False,
+                "error": "AUTH_FAILED",
+                "message": "Charles Web Interface 拒绝认证，请检查 CHARLES_USER 与 CHARLES_PASS。",
+            }
         resp.raise_for_status()
         data = resp.json()
-        return data if isinstance(data, list) else []
-    except Exception:
-        return []
+        if not isinstance(data, list):
+            return {
+                "ok": False,
+                "error": "INVALID_EXPORT_FORMAT",
+                "message": "Charles 导出结果不是预期的 JSON 数组。",
+            }
+        return {"ok": True, "entries": data}
+    except requests.Timeout:
+        return {
+            "ok": False,
+            "error": "EXPORT_TIMEOUT",
+            "message": "等待 Charles 导出超时，请确认 Charles 正在运行且 Web Interface 已启用。",
+        }
+    except requests.ConnectionError:
+        return {
+            "ok": False,
+            "error": "CHARLES_UNREACHABLE",
+            "message": "无法连接 Charles。请确认代理地址/端口及 Web Interface 设置。",
+        }
+    except requests.RequestException as exc:
+        return {"ok": False, "error": "EXPORT_FAILED", "message": str(exc)}
+    except ValueError:
+        return {
+            "ok": False,
+            "error": "INVALID_EXPORT_FORMAT",
+            "message": "Charles 导出结果无法解析为 JSON。",
+        }
+
+def clear_and_restart() -> Dict[str, Any]:
+    """显式清空 Charles session 并恢复录制，分别报告两个操作的结果。"""
+    result: Dict[str, Any] = {"cleared": False, "recording_started": False}
+    try:
+        clear_response = _get("/session/clear", timeout=5)
+        clear_response.raise_for_status()
+        result["cleared"] = True
+    except requests.RequestException as exc:
+        result["clear_error"] = str(exc)
+    try:
+        recording_response = _get("/recording/start", timeout=5)
+        recording_response.raise_for_status()
+        result["recording_started"] = True
+    except requests.RequestException as exc:
+        result["recording_error"] = str(exc)
+    result["ok"] = result["cleared"] and result["recording_started"]
+    return result
 
 def deactivate_throttling_silent() -> None:
     """静默关闭弱网，进程退出时调用，不抛异常。"""
@@ -66,20 +110,6 @@ def deactivate_throttling_silent() -> None:
         _get("/throttling/deactivate", timeout=3)
     except Exception:
         pass
-
-def clear_and_restart() -> bool:
-    """清空 Charles session 并重启录制。
-
-    必须在新数据已写入 ARCHIVE 之后调用，确保无数据丢失。
-    清理后 Charles 导出始终只包含本次之后的增量，保持导出文件小而快。
-    返回 True 表示成功，False 表示 Charles 不可达（无需中断流程）。
-    """
-    try:
-        _get("/session/clear",      timeout=5)
-        _get("/recording/start",    timeout=5)
-        return True
-    except Exception:
-        return False
 
 async def set_charles_throttling(preset_name: Optional[str], ctx: Context) -> bool:
     """激活或关闭 Charles 弱网模拟。"""
