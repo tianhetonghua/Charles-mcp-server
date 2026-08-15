@@ -72,6 +72,7 @@ agent 可通过 `load_checkpoint(n)` 随时回到任意历史时间窗口，所�
 | 工具 | 说明 |
 | --- | --- |
 | `set_throttling(preset)` | 开启 / 关闭弱网模拟，MCP 退出时自动还原 |
+| `get_proxy_status()` | 返回当前连接模式（external / managed-headless）与代理运行状态 |
 
 ---
 
@@ -105,11 +106,17 @@ filter_by_keyword("sign")        # 在那个时间窗口里搜
 
 ## 前置条件
 
+### 模式一：External（默认）
+
 Charles Proxy 已启动，开启 Web Interface：`Proxy → Web Interface Settings`
 
 - 勾选 **Enable web interface**
 - 用户名：`Charles-mcp-server`（或通过环境变量自定义）
 - 密码：`123456`（或通过环境变量自定义）
+
+### 模式二：Managed Headless（自动托管）
+
+设置 `CHARLES_MCP_MODE=managed-headless` 后，MCP 启动时自动拉起一个隔离的 Charles `--headless` 进程，自动生成随机 Web Interface 凭据，无需手动配置。MCP 退出时自动终止 Charles 进程并释放端口。文件锁保证同一时刻只有一个 MCP 实例托管 Charles。
 
 ---
 
@@ -345,6 +352,9 @@ CHARLES_PASS = "your-password"
 | `CHARLES_PASS` | `123456` | Charles Web Interface 密码 |
 | `CHARLES_PROXY_HOST` | `127.0.0.1` | Charles 代理地址 |
 | `CHARLES_PROXY_PORT` | `8888` | Charles 代理端口 |
+| `CHARLES_MCP_MODE` | `external` | `managed-headless` 时自动启动并托管 Charles Headless |
+| `CHARLES_EXECUTABLE` | 自动检测 | Charles 可执行文件路径（managed-headless 模式使用） |
+| `CHARLES_MCP_RUNTIME_DIR` | `~/.charles-mcp-server` | Headless 模式的配置、数据与日志目录 |
 
 ---
 

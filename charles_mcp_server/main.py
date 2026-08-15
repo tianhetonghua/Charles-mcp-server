@@ -9,8 +9,10 @@ from mcp.server.fastmcp import FastMCP, Context
 
 try:
     from . import CMS_tools
+    from .headless import HeadlessError, manager as headless_manager
 except ImportError:
     import CMS_tools
+    from headless import HeadlessError, manager as headless_manager
 
 mcp = FastMCP("CharlesMCP", json_response=True)
 
@@ -40,10 +42,17 @@ KEYWORD_AUTH: Dict[str, float] = {}
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
+    if headless_manager.enabled():
+        try:
+            headless_manager.start()
+        except HeadlessError as exc:
+            raise RuntimeError(f"无法启动托管的 Charles Headless：{exc}") from exc
     try:
         yield
     finally:
         CMS_tools.deactivate_throttling_silent()
+        if headless_manager.enabled():
+            headless_manager.stop()
 
 mcp.lifespan = lifespan
 
@@ -101,6 +110,30 @@ def _data_hint() -> Optional[str]:
         if age > 180:
             return f"数据已 {int(age / 60)} 分钟未更新，如需最新流量可调用 harvest_data()。"
     return None
+
+# ====================================================================
+#  运行状态与数据收割
+# ====================================================================
+
+@mcp.tool()
+async def get_proxy_status() -> Dict:
+    """返回当前 Charles 连接模式与代理状态。
+
+    managed_headless 模式由 MCP 启动并独占一个本机 Charles 实例；external 模式连接用户自行启动的 Charles。
+    """
+    if headless_manager.enabled():
+        return headless_manager.status()
+    export_result = CMS_tools.export_session()
+    return {
+        "mode": "external",
+        "managed": False,
+        "running": export_result.get("ok", False),
+        "proxy": f"{CMS_tools.CHARLES_PROXY_HOST}:{CMS_tools.CHARLES_PROXY_PORT}",
+        "web_interface": "ready" if export_result.get("ok") else "unreachable",
+        "error": export_result.get("error"),
+        "message": export_result.get("message"),
+        "https_note": "HTTPS 解密要求目标客户端已信任 Charles Root Certificate，且不存在证书锁定。",
+    }
 
 # ====================================================================
 #  数据收割
